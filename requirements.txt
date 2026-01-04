@@ -1,0 +1,10 @@
+# LabelLens Dependencies
+streamlit>=1.29.0
+groq>=0.4.0
+python-dotenv>=1.0.0
+pydantic>=2.5.0
+tenacity>=8.2.0
+
+# OCR for image scanning
+easyocr>=1.7.0
+Pillow>=10.0.0

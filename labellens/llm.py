@@ -342,13 +342,14 @@ def _get_ocr_reader():
     if _ocr_reader is None:
         import easyocr
         # Initialize with English - downloads model on first use
-        _ocr_reader = easyocr.Reader(['en'], gpu=False, verbose=False)
+        # Use GPU if available for faster processing
+        _ocr_reader = easyocr.Reader(['en'], gpu=False, verbose=False, model_storage_directory=None)
     return _ocr_reader
 
 
 def extract_ingredients_from_image(image_bytes: bytes, api_key: Optional[str] = None) -> Optional[str]:
     """
-    Extract ingredient text from an image using EasyOCR.
+    Extract ingredient text from an image using EasyOCR - optimized for speed.
     
     This function uses offline OCR to read text from product labels,
     making it work on mobile devices with camera input.
@@ -361,8 +362,9 @@ def extract_ingredients_from_image(image_bytes: bytes, api_key: Optional[str] = 
         Extracted ingredient text or None if extraction fails
     """
     try:
-        from PIL import Image
+        from PIL import Image, ImageEnhance, ImageFilter
         import io
+        import numpy as np
         
         # Convert bytes to PIL Image
         image = Image.open(io.BytesIO(image_bytes))
@@ -371,16 +373,43 @@ def extract_ingredients_from_image(image_bytes: bytes, api_key: Optional[str] = 
         if image.mode != 'RGB':
             image = image.convert('RGB')
         
+        # OPTIMIZATION 1: Resize large images for faster processing
+        max_dimension = 1200  # Reduced for faster processing
+        if max(image.size) > max_dimension:
+            ratio = max_dimension / max(image.size)
+            new_size = (int(image.size[0] * ratio), int(image.size[1] * ratio))
+            image = image.resize(new_size, Image.LANCZOS)
+        
+        # OPTIMIZATION 2: Convert to grayscale for faster OCR
+        gray_image = image.convert('L')
+        
+        # OPTIMIZATION 3: Enhance contrast for better text detection
+        enhancer = ImageEnhance.Contrast(gray_image)
+        gray_image = enhancer.enhance(1.5)
+        
+        # OPTIMIZATION 4: Sharpen the image
+        gray_image = gray_image.filter(ImageFilter.SHARPEN)
+        
+        # Convert back to RGB for EasyOCR (it expects 3 channels)
+        processed_image = gray_image.convert('RGB')
+        
+        # Convert to numpy array for EasyOCR (faster than re-encoding)
+        img_array = np.array(processed_image)
+        
         # Get OCR reader
         reader = _get_ocr_reader()
         
-        # Convert PIL image back to bytes for EasyOCR
-        img_byte_arr = io.BytesIO()
-        image.save(img_byte_arr, format='JPEG')
-        img_byte_arr = img_byte_arr.getvalue()
-        
-        # Perform OCR
-        results = reader.readtext(img_byte_arr)
+        # Perform OCR with optimized settings for speed
+        results = reader.readtext(
+            img_array,
+            detail=1,
+            paragraph=False,
+            min_size=10,
+            text_threshold=0.6,
+            low_text=0.3,
+            width_ths=0.5,
+            batch_size=8  # Process multiple regions at once
+        )
         
         if not results:
             logger.warning("No text detected in image")
@@ -389,7 +418,7 @@ def extract_ingredients_from_image(image_bytes: bytes, api_key: Optional[str] = 
         # Extract text from results (each result is [bbox, text, confidence])
         extracted_lines = []
         for (bbox, text, confidence) in results:
-            if confidence > 0.3:  # Only include reasonably confident detections
+            if confidence > 0.25:  # Slightly lower threshold for more text
                 extracted_lines.append(text)
         
         if not extracted_lines:

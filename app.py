@@ -31,6 +31,20 @@ from labellens.analyzer import (
 from labellens.config import Verdict, GROQ_API_KEY
 from labellens.llm import extract_ingredients_from_image
 
+# Pre-initialize OCR reader in background for faster first extraction
+import threading
+def _preload_ocr():
+    """Pre-load the OCR model in background for faster extraction."""
+    try:
+        from labellens.llm import _get_ocr_reader
+        _get_ocr_reader()
+    except:
+        pass
+
+# Start preloading OCR in background thread
+_ocr_preload_thread = threading.Thread(target=_preload_ocr, daemon=True)
+_ocr_preload_thread.start()
+
 # Page configuration - Mobile optimized
 st.set_page_config(
     page_title="LabelLens",
@@ -2031,6 +2045,194 @@ def render_animated_background():
     """, unsafe_allow_html=True)
 
 
+def render_cursor_follower():
+    """Render an animated circular cursor follower with glowing effects."""
+    # Use components.html to execute JavaScript properly
+    st.components.v1.html("""
+    <script>
+        // Create elements in the parent document
+        (function() {
+            try {
+                const parentDoc = window.parent.document;
+                
+                // Clean up any existing cursor elements and animation
+                if (window.parent.cursorAnimationId) {
+                    cancelAnimationFrame(window.parent.cursorAnimationId);
+                }
+                
+                const existingFollower = parentDoc.getElementById('cursorFollower');
+                const existingDot = parentDoc.getElementById('cursorDot');
+                const existingStyle = parentDoc.getElementById('cursorFollowerStyle');
+                if (existingFollower) existingFollower.remove();
+                if (existingDot) existingDot.remove();
+                if (existingStyle) existingStyle.remove();
+                
+                // Remove old event listener if exists
+                if (window.parent.cursorMouseHandler) {
+                    parentDoc.removeEventListener('mousemove', window.parent.cursorMouseHandler);
+                }
+                
+                // Add keyframes to parent document
+                const style = parentDoc.createElement('style');
+                style.id = 'cursorFollowerStyle';
+                style.textContent = `
+                    @keyframes cursorRingRotate {
+                        from { transform: translate(-50%, -50%) rotate(0deg); }
+                        to { transform: translate(-50%, -50%) rotate(360deg); }
+                    }
+                `;
+                parentDoc.head.appendChild(style);
+                
+                // Create follower element
+                const follower = parentDoc.createElement('div');
+                follower.id = 'cursorFollower';
+                follower.style.cssText = `
+                    position: fixed;
+                    width: 40px;
+                    height: 40px;
+                    border-radius: 50%;
+                    pointer-events: none;
+                    z-index: 99999;
+                    transform: translate(-50%, -50%);
+                    background: radial-gradient(circle, rgba(139, 92, 246, 0.8) 0%, rgba(6, 182, 212, 0.4) 50%, transparent 70%);
+                    box-shadow: 0 0 20px rgba(139, 92, 246, 0.6), 0 0 40px rgba(6, 182, 212, 0.4), 0 0 60px rgba(244, 114, 182, 0.3);
+                    left: -100px;
+                    top: -100px;
+                    transition: opacity 0.3s;
+                `;
+                parentDoc.body.appendChild(follower);
+                
+                // Create inner ring
+                const innerRing = parentDoc.createElement('div');
+                innerRing.style.cssText = `
+                    position: absolute;
+                    top: 50%;
+                    left: 50%;
+                    width: 60px;
+                    height: 60px;
+                    border-radius: 50%;
+                    transform: translate(-50%, -50%);
+                    border: 2px solid rgba(139, 92, 246, 0.5);
+                    animation: cursorRingRotate 3s linear infinite;
+                `;
+                follower.appendChild(innerRing);
+                
+                // Create outer ring
+                const outerRing = parentDoc.createElement('div');
+                outerRing.style.cssText = `
+                    position: absolute;
+                    top: 50%;
+                    left: 50%;
+                    width: 80px;
+                    height: 80px;
+                    border-radius: 50%;
+                    transform: translate(-50%, -50%);
+                    border: 1px solid rgba(6, 182, 212, 0.3);
+                    animation: cursorRingRotate 4s linear infinite reverse;
+                `;
+                follower.appendChild(outerRing);
+                
+                // Create dot element
+                const dot = parentDoc.createElement('div');
+                dot.id = 'cursorDot';
+                dot.style.cssText = `
+                    position: fixed;
+                    width: 8px;
+                    height: 8px;
+                    border-radius: 50%;
+                    pointer-events: none;
+                    z-index: 100000;
+                    transform: translate(-50%, -50%);
+                    background: white;
+                    box-shadow: 0 0 10px rgba(255, 255, 255, 0.8);
+                    left: -100px;
+                    top: -100px;
+                    transition: opacity 0.3s;
+                `;
+                parentDoc.body.appendChild(dot);
+                
+                // Mouse tracking
+                let mouseX = 0, mouseY = 0;
+                let followerX = -100, followerY = -100;
+                
+                window.parent.cursorMouseHandler = function(e) {
+                    mouseX = e.clientX;
+                    mouseY = e.clientY;
+                    
+                    // Dot follows instantly
+                    const dotEl = parentDoc.getElementById('cursorDot');
+                    if (dotEl) {
+                        dotEl.style.left = mouseX + 'px';
+                        dotEl.style.top = mouseY + 'px';
+                    }
+                };
+                
+                parentDoc.addEventListener('mousemove', window.parent.cursorMouseHandler);
+                
+                // Smooth animation for follower
+                function animate() {
+                    const followerEl = parentDoc.getElementById('cursorFollower');
+                    if (!followerEl) {
+                        // Element was removed, stop animation
+                        return;
+                    }
+                    
+                    followerX += (mouseX - followerX) * 0.08;
+                    followerY += (mouseY - followerY) * 0.08;
+                    
+                    followerEl.style.left = followerX + 'px';
+                    followerEl.style.top = followerY + 'px';
+                    
+                    window.parent.cursorAnimationId = requestAnimationFrame(animate);
+                }
+                
+                animate();
+                
+            } catch(e) {
+                console.log('Cursor follower error:', e);
+            }
+        })();
+    </script>
+    """, height=0)
+
+
+def remove_cursor_follower():
+    """Remove the cursor follower when leaving the home page."""
+    st.components.v1.html("""
+    <script>
+        (function() {
+            try {
+                const parentDoc = window.parent.document;
+                
+                // Cancel animation
+                if (window.parent.cursorAnimationId) {
+                    cancelAnimationFrame(window.parent.cursorAnimationId);
+                    window.parent.cursorAnimationId = null;
+                }
+                
+                // Remove event listener
+                if (window.parent.cursorMouseHandler) {
+                    parentDoc.removeEventListener('mousemove', window.parent.cursorMouseHandler);
+                    window.parent.cursorMouseHandler = null;
+                }
+                
+                // Remove elements
+                const follower = parentDoc.getElementById('cursorFollower');
+                const dot = parentDoc.getElementById('cursorDot');
+                const style = parentDoc.getElementById('cursorFollowerStyle');
+                
+                if (follower) follower.remove();
+                if (dot) dot.remove();
+                if (style) style.remove();
+                
+            } catch(e) {
+                console.log('Cursor cleanup error:', e);
+            }
+        })();
+    </script>
+    """, height=0)
+
+
 def init_session_state():
     """Initialize session state variables."""
     if 'analysis_result' not in st.session_state:
@@ -3710,6 +3912,12 @@ def main():
     
     # Render premium animated background
     render_animated_background()
+    
+    # Render cursor follower on home page, remove on other pages
+    if st.session_state.show_onboarding:
+        render_cursor_follower()
+    else:
+        remove_cursor_follower()
     
     # API key check
     if not GROQ_API_KEY:

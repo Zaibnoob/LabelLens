@@ -333,26 +333,45 @@ def get_client(api_key: Optional[str] = None) -> GroqClient:
     return _client
 
 
-# EasyOCR reader singleton (lazy loaded)
+# OCR reader singleton (lazy loaded)
 _ocr_reader = None
+_ocr_type = None  # 'tesseract' or 'easyocr'
 
 def _get_ocr_reader():
-    """Get or create the EasyOCR reader (lazy loaded for performance)."""
-    global _ocr_reader
-    if _ocr_reader is None:
+    """Get or create the OCR reader (lazy loaded for performance). Tries pytesseract first (lighter), falls back to easyocr."""
+    global _ocr_reader, _ocr_type
+    
+    if _ocr_reader is not None:
+        return _ocr_reader, _ocr_type
+    
+    # Try pytesseract first (lighter, faster to deploy)
+    try:
+        import pytesseract
+        _ocr_reader = pytesseract
+        _ocr_type = 'tesseract'
+        logger.info("Using pytesseract for OCR")
+        return _ocr_reader, _ocr_type
+    except ImportError:
+        pass
+    
+    # Fall back to easyocr
+    try:
         import easyocr
-        # Initialize with English - downloads model on first use
-        # Use GPU if available for faster processing
-        _ocr_reader = easyocr.Reader(['en'], gpu=False, verbose=False, model_storage_directory=None)
-    return _ocr_reader
+        _ocr_reader = easyocr.Reader(['en'], gpu=False, verbose=False)
+        _ocr_type = 'easyocr'
+        logger.info("Using easyocr for OCR")
+        return _ocr_reader, _ocr_type
+    except ImportError:
+        pass
+    
+    return None, None
 
 
 def extract_ingredients_from_image(image_bytes: bytes, api_key: Optional[str] = None) -> Optional[str]:
     """
-    Extract ingredient text from an image using EasyOCR - optimized for speed.
+    Extract ingredient text from an image using available OCR.
     
-    This function uses offline OCR to read text from product labels,
-    making it work on mobile devices with camera input.
+    Tries pytesseract first (lighter), falls back to easyocr.
     
     Args:
         image_bytes: Raw image bytes from camera or file upload
@@ -364,76 +383,73 @@ def extract_ingredients_from_image(image_bytes: bytes, api_key: Optional[str] = 
     try:
         from PIL import Image, ImageEnhance, ImageFilter
         import io
-        import numpy as np
         
         # Convert bytes to PIL Image
         image = Image.open(io.BytesIO(image_bytes))
         
-        # Convert to RGB if necessary (handles PNG with alpha, etc.)
+        # Convert to RGB if necessary
         if image.mode != 'RGB':
             image = image.convert('RGB')
         
-        # OPTIMIZATION 1: Resize large images for faster processing
-        max_dimension = 1200  # Reduced for faster processing
+        # Resize large images for faster processing
+        max_dimension = 1200
         if max(image.size) > max_dimension:
             ratio = max_dimension / max(image.size)
             new_size = (int(image.size[0] * ratio), int(image.size[1] * ratio))
             image = image.resize(new_size, Image.LANCZOS)
         
-        # OPTIMIZATION 2: Convert to grayscale for faster OCR
+        # Convert to grayscale for better OCR
         gray_image = image.convert('L')
         
-        # OPTIMIZATION 3: Enhance contrast for better text detection
+        # Enhance contrast
         enhancer = ImageEnhance.Contrast(gray_image)
         gray_image = enhancer.enhance(1.5)
         
-        # OPTIMIZATION 4: Sharpen the image
+        # Sharpen
         gray_image = gray_image.filter(ImageFilter.SHARPEN)
         
-        # Convert back to RGB for EasyOCR (it expects 3 channels)
-        processed_image = gray_image.convert('RGB')
-        
-        # Convert to numpy array for EasyOCR (faster than re-encoding)
-        img_array = np.array(processed_image)
-        
         # Get OCR reader
-        reader = _get_ocr_reader()
+        reader, ocr_type = _get_ocr_reader()
         
-        # Perform OCR with optimized settings for speed
-        results = reader.readtext(
-            img_array,
-            detail=1,
-            paragraph=False,
-            min_size=10,
-            text_threshold=0.6,
-            low_text=0.3,
-            width_ths=0.5,
-            batch_size=8  # Process multiple regions at once
-        )
+        if reader is None:
+            logger.error("No OCR engine available")
+            return None
         
-        if not results:
+        if ocr_type == 'tesseract':
+            # Use pytesseract
+            full_text = reader.image_to_string(gray_image)
+        else:
+            # Use easyocr
+            import numpy as np
+            processed_image = gray_image.convert('RGB')
+            img_array = np.array(processed_image)
+            
+            results = reader.readtext(
+                img_array,
+                detail=1,
+                paragraph=False,
+                min_size=10,
+                text_threshold=0.6,
+                low_text=0.3,
+                width_ths=0.5,
+                batch_size=8
+            )
+            
+            if not results:
+                return None
+            
+            extracted_lines = [text for (bbox, text, conf) in results if conf > 0.25]
+            full_text = ' '.join(extracted_lines)
+        
+        if not full_text or not full_text.strip():
             logger.warning("No text detected in image")
             return None
         
-        # Extract text from results (each result is [bbox, text, confidence])
-        extracted_lines = []
-        for (bbox, text, confidence) in results:
-            if confidence > 0.25:  # Slightly lower threshold for more text
-                extracted_lines.append(text)
-        
-        if not extracted_lines:
-            logger.warning("No confident text detections")
-            return None
-        
-        # Join all text - ingredient lists are often comma-separated
-        full_text = ' '.join(extracted_lines)
-        
         # Clean up common OCR issues
-        full_text = full_text.replace('|', 'l')  # Common OCR confusion
-        full_text = full_text.replace('0', 'O').replace('O', 'o') if 'ingredients' in full_text.lower() else full_text
+        full_text = full_text.replace('|', 'l')
         
-        logger.info(f"Successfully extracted {len(extracted_lines)} text segments from image")
-        return full_text
+        logger.info(f"Successfully extracted text from image using {ocr_type}")
+        return full_text.strip()
         
     except ImportError as e:
         logger.error(f"OCR dependencies not installed: {e}")

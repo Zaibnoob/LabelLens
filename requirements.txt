@@ -5,6 +5,9 @@ python-dotenv>=1.0.0
 pydantic>=2.5.0
 tenacity>=8.2.0
 
-# OCR for image scanning
-easyocr>=1.7.0
+# OCR for image scanning (optional - comment out for faster deployment)
+# easyocr>=1.7.0
 Pillow>=10.0.0
+
+# Use pytesseract instead (lighter alternative)
+pytesseract>=0.3.10
